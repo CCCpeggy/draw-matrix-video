@@ -30,6 +30,7 @@ class KernelManager:
     def __init__(self, kernel):
         self.kernel = kernel
         self.size = self.kernel.shape[0]
+        self.drawer = MatrixDrawer(self, 4)
     
     def get_index(self, i=0, j=0):
         shift = -(self.size // 2)
@@ -112,16 +113,29 @@ class MatrixDrawer:
         self.matrix = matrix
         self.padding = padding
         
+    def draw_rect(self, ax, i, j, color="black"):
+        position = (j-0.5+self.padding, i-0.5+self.padding)
+        rect = Rectangle(position, 1, 1, fill=False, color=color, linewidth=3)
+        ax.add_patch(rect)
+          
     def draw_value(self, ax, i, j, color=None):
         if color is None:
             color = 'black' if self.matrix(i, j) > 127 else 'white'
         ax.text(j + self.padding, i + self.padding, int(self.matrix(i, j)), ha="center", va="center", color=color, fontsize=18)
         
     def __call__(self, filename, selected_i=-1, selected_j=-1, kernel=None):
+        if isinstance(self.matrix, KernelManager):
+            self.draw_kernel(filename)
+            return
         matrix = self.matrix.matrix * 1
         matrix = np.pad(matrix, (self.padding,), 'constant', constant_values=(255))
         # pad_fst_start, matrix_start, pad_snd_start, total_len = 0, self.padding, self.padding + matrix.size, self.padding * 2 + matrix.size
         
+        if kernel is not None:
+            for ki, kj, mi, mj in kernel.get_index(selected_i, selected_j):
+                if not self.matrix.check_boundary(mi, mj):
+                    matrix[mi + self.padding, mj + self.padding] = self.matrix(mi, mj)
+
         fig, ax = plt.subplots(figsize=(8, 8))
         ax.imshow(matrix, cmap='gray')
         ax.axis('off')  # 不顯示座標軸
@@ -130,18 +144,34 @@ class MatrixDrawer:
         kernel_index = []
         if kernel is not None:
             for ki, kj, mi, mj in kernel.get_index(selected_i, selected_j):
-                position = (mj-0.5+self.padding, mi-0.5+self.padding)
-                boundary_color = MatrixDrawer.seleted_boundary_color if mi == selected_i and mj == selected_j else MatrixDrawer.kernel_boundary_color
-                rect = Rectangle(position, 1, 1, fill=False, color=boundary_color, linewidth=3)
-                ax.add_patch(rect)
-                ax.text(mj + self.padding, mi + self.padding, int(self.matrix(mi, mj)), ha="center", va="center", color=MatrixDrawer.kernel_text_color, fontsize=18)
+                if not (mi == selected_i and mj == selected_j):
+                    self.draw_rect(ax, mi, mj, MatrixDrawer.kernel_boundary_color)
+                self.draw_value(ax, mi, mj, MatrixDrawer.kernel_text_color)
                 kernel_index.append((mi, mj))
+            self.draw_rect(ax, selected_i, selected_j, MatrixDrawer.seleted_boundary_color)
 
         # 在每個單元格中添加數字
         for i in range(self.matrix.size):
             for j in range(self.matrix.size):
                 if (i, j) not in kernel_index:
                     self.draw_value(ax, i, j)
+                    
+        plt.savefig(filename)
+        plt.close()
+        
+    def draw_kernel(self, filename):
+        matrix = np.ones((self.matrix.size, self.matrix.size)) * 255
+        matrix = np.pad(matrix, (self.padding - 1,), 'constant', constant_values=(255))
+        matrix = np.pad(matrix, (1,), 'constant', constant_values=(0))
+        
+        fig, ax = plt.subplots(figsize=(8, 8))
+        ax.imshow(matrix, cmap='gray')
+        ax.axis('off')  # 不顯示座標軸
+        
+        # 繪製當前的 kernel
+        for ki, kj, mi, mj in self.matrix.get_index():
+            self.draw_rect(ax, ki, kj, "black")
+            self.draw_value(ax, ki, kj, "black")
                     
         plt.savefig(filename)
         plt.close()
@@ -166,6 +196,7 @@ class MatrixVideoGenerator:
                 self.matrix_after.drawer(self.file_namer.get_tmp_name(2), i, j, self.kernel)
                 for _ in range(1):
                     shutil.copyfile(self.file_namer.get_tmp_name(2), self.file_namer.get_name())
+        # self.kernel.drawer(self.file_namer.get_tmp_name(0))
         
         subprocess.call(['ffmpeg', '-i', self.file_namer.get_format(), '-r', '20', '-vcodec', 'libx264', '-crf', '25', '-y', 'output.mp4'])
         # self.file_namer.delete()
