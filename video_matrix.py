@@ -38,6 +38,13 @@ class KernelManager:
             for l in range(0, self.size):
                 yield k, l, i + k + shift, j + l + shift
     
+    @staticmethod
+    def get_kernel_index(size, i=0, j=0):
+        shift = -(size // 2)
+        for k in range(0, size):
+            for l in range(0, size):
+                yield k, l, i + k + shift, j + l + shift
+    
     def normalize(self):
         self.kernel = self.kernel.astype(np.float32)
         self.kernel /= self.kernel.sum()
@@ -77,10 +84,10 @@ class MatrixManager:
         return sum
     
 class TmpFileNamer:
-    def __init__(self):
+    def __init__(self, idx=0):
         self.count = 0
         self.tmp_files = []
-        self.tmp_folder = "tmp_files"
+        self.tmp_folder = f"tmp_files_{idx}"
         if not os.path.exists(self.tmp_folder):
             os.mkdir(self.tmp_folder)
 
@@ -101,9 +108,10 @@ class TmpFileNamer:
         return os.path.join(self.tmp_folder, filename)
 
     def delete(self):
+        for filename in self.tmp_files:
+            os.remove(os.path.join(self.tmp_folder, filename))
         os.rmdir(self.tmp_folder)
-        # for i in range(self.count):
-        #     os.remove(f'image_{i}.png')
+        self.tmp_files = []
 
 class MatrixDrawer:
     seleted_boundary_color = "#F7682D"
@@ -123,7 +131,7 @@ class MatrixDrawer:
             color = 'black' if self.matrix(i, j) > 127 else 'white'
         ax.text(j + self.padding, i + self.padding, int(self.matrix(i, j)), ha="center", va="center", color=color, fontsize=18)
         
-    def __call__(self, filename, selected_i=-1, selected_j=-1, kernel=None):
+    def __call__(self, filename, selected_i=-1, selected_j=-1, kernel_size=0):
         if isinstance(self.matrix, KernelManager):
             self.draw_kernel(filename)
             return
@@ -131,8 +139,8 @@ class MatrixDrawer:
         matrix = np.pad(matrix, (self.padding,), 'constant', constant_values=(255))
         # pad_fst_start, matrix_start, pad_snd_start, total_len = 0, self.padding, self.padding + matrix.size, self.padding * 2 + matrix.size
         
-        if kernel is not None:
-            for ki, kj, mi, mj in kernel.get_index(selected_i, selected_j):
+        if kernel_size > 0:
+            for ki, kj, mi, mj in KernelManager.get_kernel_index(kernel_size, selected_i, selected_j):
                 if not self.matrix.check_boundary(mi, mj):
                     matrix[mi + self.padding, mj + self.padding] = self.matrix(mi, mj)
 
@@ -142,8 +150,8 @@ class MatrixDrawer:
         
         # 繪製當前的 kernel
         kernel_index = []
-        if kernel is not None:
-            for ki, kj, mi, mj in kernel.get_index(selected_i, selected_j):
+        if kernel_size > 0:
+            for ki, kj, mi, mj in KernelManager.get_kernel_index(kernel_size, selected_i, selected_j):
                 if not (mi == selected_i and mj == selected_j):
                     self.draw_rect(ax, mi, mj, MatrixDrawer.kernel_boundary_color)
                 self.draw_value(ax, mi, mj, MatrixDrawer.kernel_text_color)
@@ -177,9 +185,10 @@ class MatrixDrawer:
         plt.close()
 
 class MatrixVideoGenerator:
-    def __init__(self, matrix_size, kernel):
+    def __init__(self, matrix_size, kernel, change_based=False):
         self.matrix_size=matrix_size
         self.padding=kernel.shape[0] // 2 + 1
+        self.change_based = change_based
 
         self.matrix_before = MatrixManager(matrix_size, self.padding, MatrixBoundaryManager.ZERO)
         self.matrix_before.random()
@@ -187,19 +196,30 @@ class MatrixVideoGenerator:
         self.matrix_after.matrix = self.matrix_before.matrix * 1
         self.kernel=KernelManager(kernel)
         self.kernel.normalize()
-        self.file_namer = TmpFileNamer()
+        self.file_namer_1 = TmpFileNamer(1)
+        self.file_namer_2 = TmpFileNamer(2)
  
     def __call__(self):
         for i in range(self.matrix_size):
             for j in range(self.matrix_size):
-                self.matrix_after.set_value(i, j, self.matrix_before.convolve(i, j, self.kernel))
-                self.matrix_after.drawer(self.file_namer.get_tmp_name(2), i, j, self.kernel)
-                for _ in range(1):
-                    shutil.copyfile(self.file_namer.get_tmp_name(2), self.file_namer.get_name())
-        # self.kernel.drawer(self.file_namer.get_tmp_name(0))
+                if self.change_based:
+                    self.matrix_before.set_value(i, j, self.matrix_before.convolve(i, j, self.kernel))
+                    self.matrix_before.drawer(self.file_namer_1.get_tmp_name(), i, j, self.kernel.size)
+                else:
+                    self.matrix_after.set_value(i, j, self.matrix_before.convolve(i, j, self.kernel))
+                    self.matrix_before.drawer(self.file_namer_1.get_tmp_name(), i, j, self.kernel.size)
+                    self.matrix_after.drawer(self.file_namer_2.get_tmp_name(), i, j, 1)
+                for _ in range(10):
+                    shutil.copyfile(self.file_namer_1.get_tmp_name(), self.file_namer_1.get_name())
+                    if not self.change_based:
+                        shutil.copyfile(self.file_namer_2.get_tmp_name(), self.file_namer_2.get_name())
+        self.kernel.drawer("kernel.png")
         
-        subprocess.call(['ffmpeg', '-i', self.file_namer.get_format(), '-r', '20', '-vcodec', 'libx264', '-crf', '25', '-y', 'output.mp4'])
-        # self.file_namer.delete()
+        subprocess.call(['ffmpeg', '-i', self.file_namer_1.get_format(), '-r', '20', '-vcodec', 'libx264', '-crf', '25', '-y', 'matrix1.mp4'])
+        if not self.change_based:
+            subprocess.call(['ffmpeg', '-i', self.file_namer_2.get_format(), '-r', '20', '-vcodec', 'libx264', '-crf', '25', '-y', 'matrix2.mp4'])
+        self.file_namer_1.delete()
+        self.file_namer_2.delete()
                 
 if __name__ == "__main__":
-    MatrixVideoGenerator(5, np.array([[0, 0, 0], [0, 1, 0], [0, 0, 0]]))()
+    MatrixVideoGenerator(5, np.array([[1, 1, 1], [0, 1, 0], [0, 0, 0]]), change_based=False)()
